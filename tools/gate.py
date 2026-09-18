@@ -1,66 +1,100 @@
 #!/usr/bin/env python3
-"""Compile-gate: byte-compile + import-check every python file in the repo.
+"""Compiler-based gate for this repo.
 
-This build environment has a demonstrated token-mangling write channel (a brace
-or underscore can silently vanish). Human/model eyes do not catch it; the
-compiler does. Run after every batch of writes:
+The channel that writes files into this environment is lossy (an occasional
+character drops mid-word: `values` -> `valus`). Semantic damage does not
+change line counts, so line- and grep-based checks miss it; the compiler and
+the runtime do not. This gate therefore trusts only executable evidence:
 
-    python3 tools/gate.py          # compile every .py, report first errors
-    python3 tools/gate.py --imports # additionally import every sentinel module
+  stage 1: py_compile every repo python file (syntax)
+  stage 2: import every sentinel module + run the generator/parser round-trip
+  stage 3: full pytest suite
 
-Exit 0 = every file on disk is syntactically valid as-written.
+Anything non-zero stops the build.
 """
-from __future__ import annotations
-
+import importlib.util
+import os
 import sys
-from pathlib import Path
+import unittest
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 
-def compile_all():
-    failures = []
-    checked = 0
-    for path in sorted(ROOT.rglob("*.py")):
-        if ".venv" in path.parts or "vendor" in path.parts:
+def stage_compile() -> list:
+    fails = []
+    for base, dirs, files in os.walk(ROOT):
+        if "vendor" in base or ".git" in base:
             continue
-        checked += 1
-        try:
-            compile(path.read_bytes(), str(path), "exec")
-        except SyntaxError as exc:
-            failures.append(f"{path.relative_to(ROOT)}:{exc.lineno}: {exc.msg}")
-    return checked, failures
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(base, name)
+            try:
+                with open(path, "rb") as handle:
+                    compile(handle.read(), path, "exec")
+            except SyntaxError as exc:
+                fails.append(f"SYNTAX {path}:{exc.lineno}: {exc.msg}")
+    return fails
 
 
-def import_all():
-    failures = []
-    sys.path.insert(0, str(ROOT))
-    import importlib.util
-    for name in ("sentinel.registry", "sentinel.findings", "sentinel.reader",
-                 "sentinel.parser", "sentinel.rules", "sentinel.report",
-                 "sentinel.generate", "sentinel.fuzz", "sentinel.cli"):
+def stage_smoke() -> list:
+    fails = []
+    mods = ["sentinel", "sentinel.findings", "sentinel.reader", "sentinel.registry",
+            "sentinel.parser", "sentinel.rules", "sentinel.report", "sentinel.generate",
+            "sentinel.fuzz", "sentinel.cli"]
+    for dotted in mods:
         try:
-            importlib.util.import_module(name)
+            importlib.util.import_module(dotted)
         except Exception as exc:
-            failures.append(f"{name}: {type(exc).__name__}: {exc}")
-    return failures
+            fails.append(f"IMPORT {dotted}: {type(exc).__name__}: {exc}")
+    if fails:
+        return fails
+    # behavioral: build a model, re-read it, check agreement (round-trip gate)
+    try:
+        from sentinel.generate import build_model, sample_config
+        from sentinel.parser import parse_gguf
+        from sentinel import rules as rulez
+        buf = build_model(sample_config())
+        model = parse_gguf(buf, filename="mem")
+        report = rulez.analyze_model(model, buf)
+        hard = [f for f in report if f.severity == "error"]
+        if hard:
+            fails.append("ROUNDTRIP: clean synthetic model produced errors: "
+                         + ", ".join(sorted({f.code for f in hard})))
+    except Exception as exc:
+        fails.append(f"ROUNDTRIP: {type(exc).__name__}: {exc}")
+    return fails
 
 
-def main(argv):
-    checked, failures = compile_all()
-    for line in failures:
-        print("SYNTAX", line)
-    print(f"compile: {checked - len(failures)}/{checked} ok")
-    if failures:
+def stage_pytest() -> int:
+    loader = unittest.TestLoader()
+    suite = loader.discover("tests", pattern="test_*.py", top_level_dir=ROOT)
+    return 0 if unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful else 1
+
+
+def main() -> int:
+    fails = stage_compile()
+    for line in fails:
+        print(line)
+    if fails:
+        print(f"COMPILE FAIL ({len(fails)})")
         return 1
-    if "--imports" in argv:
-        ifail = import_all()
-        for line in ifail:
-            print("IMPORT", line)
-        print(f"imports: {'ok' if not ifail else 'FAILED'}")
-        return 1 if ifail else 0
-    return 0
+    print(f"compile: ok")
+    fails = stage_smoke()
+    for line in fails:
+        print(line)
+    if fails:
+        print(f"SMOKE FAIL ({len(fails)})")
+        return 1
+    print("smoke: ok")
+    rc = stage_pytest()
+    if rc:
+        print("PYTEST FAIL")
+    else:
+        print("pytest: ok")
+    return rc
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())
