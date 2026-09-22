@@ -112,6 +112,11 @@ class Reader:
         raw = self.read_exact(fmt.size)
         return fmt.unpack(raw)[0]
 
+    def scalar(self, fmt_str: str):
+        """Decode one little-endian scalar from its struct format string."""
+        raw = self.read_exact(struct.calcsize(fmt_str))
+        return struct.unpack(fmt_str, raw)[0]
+
     def u8(self) -> int:    return self._read_scalar(_U8)
     def i8(self) -> int:    return self._read_scalar(_I8)
     def u16(self) -> int:   return self._read_scalar(_U16)

@@ -248,6 +248,8 @@ def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
     elif kind == "truncate":
         cut = rng.randrange(max(8, len(body) - 8), )
         body = body[:cut] if cut else body[:1]
+    elif kind == "truncated_header":
+        body = body[:rng.randrange(1, min(12, max(1, len(body))))]
     elif kind == "flip":
         i = rng.randrange(len(body))
         body[i] ^= rng.choice([1, 2, 0x40, 0x80, 0xFF])
