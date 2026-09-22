@@ -187,14 +187,18 @@ def parse_gguf(buf: bytes, *, filename: Optional[str] = None) -> ParsedModel:
 
     if rd.read_exact(4) != MAGIC:
         raise SentinelError("E_MAGIC", "file does not start with the GGUF magic")
-    version = rd.u32()
-    if version == 0 or version > GGUF_VERSION_MAX:
-        raise SentinelError("E_VERSION",
-                             f"unsupported GGUF version {version} (expected 1..{GGUF_VERSION_MAX})",
-                             offset=4)
-    n_tensors = _read_count(rd, "n_tensors", rd.remaining(), 16, findings)
-    n_kv = _read_count(rd, "n_kv", rd.remaining(), 13, findings)
-    alignment = rd.u32()
+    try:
+        version = rd.u32()
+        n_tensors = _read_count(rd, "n_tensors", rd.remaining(), 16, findings)
+        n_kv = _read_count(rd, "n_kv", rd.remaining(), 13, findings)
+        alignment = rd.u32()
+    except Eof as exc:
+        raise SentinelError("E_TRUNCATED_HEADER",
+                             f"file ends inside the 28-byte header: {exc}",
+                             offset=exc.offset) from exc
+    except OverAlloc as exc:
+        raise SentinelError("E_HUGE_ALLOC", f"header field too large: {exc}",
+                             offset=exc.offset) from exc
     if alignment == 0 or (alignment & (alignment - 1)) != 0:
         findings.append(make("W_NO_ALIGNMENT",
                               f"general.alignment is {alignment}, not a positive power of two",
