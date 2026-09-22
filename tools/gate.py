@@ -18,7 +18,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-MODULES = ("_type_table", "findings", "registry", "reader", "keys", "parser", "generate")
+MODULES = ("_type_table", "findings", "registry", "reader", "keys", "parser", "generate", "rules")
 
 
 def fail(label, exc):

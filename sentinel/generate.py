@@ -159,7 +159,7 @@ def build_model(spec: Optional[ModelSpec] = None, *, seed: int = 0xC0FFEE) -> by
     kvs.append(enc_string_pair("general.name", f"sentinel-synthetic-{arch}"))
     kvs.append(enc_string_pair("general.description", "synthetic fixture for gguf-sentinel tests"))
     kvs.append(enc_string_pair("tokenizer.ggml.model", "llama"))
-    specials = ["<unk>", "<s>", "</s>", "<|end|>"]
+    specials = ["<unk>", "<s>", "</s>", "<|start|>", "<|end|>"]
     tokens = specials + [f"tok{i}" for i in range(spec.n_vocab - len(specials))]
     kvs.append(enc_array_pair("tokenizer.ggml.tokens", GSTRING, None, tokens))
     token_types = [3] * len(tokens)
