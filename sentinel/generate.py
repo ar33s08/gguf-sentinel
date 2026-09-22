@@ -224,8 +224,8 @@ def build_model(spec: Optional[ModelSpec] = None, *, seed: int = 0xC0FFEE) -> by
 
 # ---------------------------------------------------------------- mutation
 MUTATIONS = (
-    "magic", "version", "count_tensors", "count_kv", "truncate", "flip",
-    "tensor_offset", "tensor_type", "tensor_dim", "alignment", "kv_type",
+    "magic", "version", "count_tensors", "count_kv", "truncate", "truncated_header",
+    "flip", "tensor_offset", "tensor_type", "tensor_dim", "alignment", "kv_type",
     "append", "zero",
 )
 
