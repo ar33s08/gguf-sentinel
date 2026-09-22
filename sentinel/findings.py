@@ -50,13 +50,15 @@ class SentinelError(Exception):
 
 class UnknownSeverity(SentinelError):
     def __init__(self, severity):
-        super().__init__(f"unknown severity: {severity!r} (expected one of {_ALL_SEVERITIES})")
+        super().__init__("E_UNKNOWN_SEVERITY",
+                         f"unknown severity: {severity!r} (expected one of {_ALL_SEVERITIES})")
         self.severity = severity
 
 
 class UnknownCode(SentinelError):
     def __init__(self, code):
-        super().__init__(f"unregistered finding code: {code!r} (add it to CODE_SEVERITIES)")
+        super().__init__("E_UNKNOWN_CODE",
+                         f"unregistered finding code: {code!r} (add it to CODE_SEVERITIES)")
         self.code = code
 
 
@@ -70,6 +72,7 @@ CODE_SEVERITIES: dict[str, str] = {
     "E_TRUNCATED_TENSOR_INFO": SEV_ERROR,
     "E_TRUNCATED_KV_VALUE": SEV_ERROR,
     "E_BAD_KV_TYPE": SEV_ERROR,
+    "E_BAD_STRING": SEV_ERROR,
     "E_BAD_TENSOR_TYPE": SEV_ERROR,
     "E_HUGE_ALLOC": SEV_ERROR,
     "E_NEGATIVE_DIM": SEV_ERROR,

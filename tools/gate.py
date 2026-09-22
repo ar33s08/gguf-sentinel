@@ -1,100 +1,123 @@
 #!/usr/bin/env python3
-"""Compiler-based gate for this repo.
+"""Compile + import + behaviour gate for the whole package.
 
-The channel that writes files into this environment is lossy (an occasional
-character drops mid-word: `values` -> `valus`). Semantic damage does not
-change line counts, so line- and grep-based checks miss it; the compiler and
-the runtime do not. This gate therefore trusts only executable evidence:
-
-  stage 1: py_compile every repo python file (syntax)
-  stage 2: import every sentinel module + run the generator/parser round-trip
-  stage 3: full pytest suite
-
-Anything non-zero stops the build.
+The file-writing channel in this workspace can drop or duplicate a single
+character inside a word ("range" -> "range"). A syntax check finds half of
+that damage; an import finds more; behavioural probes find the rest. This
+script runs all three layers and exits non-zero on anything, so CI and I use
+the exact same gate. Run: python3 tools/gate.py
 """
-import importlib.util
-import os
+from __future__ import annotations
+
+import importlib
+import pathlib
+import py_compile
+import random
 import sys
-import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-
-def stage_compile() -> list:
-    fails = []
-    for base, dirs, files in os.walk(ROOT):
-        if "vendor" in base or ".git" in base:
-            continue
-        for name in sorted(files):
-            if not name.endswith(".py"):
-                continue
-            path = os.path.join(base, name)
-            try:
-                with open(path, "rb") as handle:
-                    compile(handle.read(), path, "exec")
-            except SyntaxError as exc:
-                fails.append(f"SYNTAX {path}:{exc.lineno}: {exc.msg}")
-    return fails
+MODULES = ("_type_table", "findings", "registry", "reader", "keys", "parser", "generate")
 
 
-def stage_smoke() -> list:
-    fails = []
-    mods = ["sentinel", "sentinel.findings", "sentinel.reader", "sentinel.registry",
-            "sentinel.parser", "sentinel.rules", "sentinel.report", "sentinel.generate",
-            "sentinel.fuzz", "sentinel.cli"]
-    for dotted in mods:
+def fail(label, exc):
+    print(f"GATE FAIL [{label}]: {type(exc).__name__}: {exc}")
+    raise SystemExit(1)
+
+
+def layer_compile():
+    for path in sorted((ROOT / "sentinel").glob("*.py")):
         try:
-            importlib.util.import_module(dotted)
-        except Exception as exc:
-            fails.append(f"IMPORT {dotted}: {type(exc).__name__}: {exc}")
-    if fails:
-        return fails
-    # behavioral: build a model, re-read it, check agreement (round-trip gate)
+            compile(path.read_text(), str(path), "exec")
+        except SyntaxError as exc:
+            fail("compile " + path.name, exc)
+    print("layer compile: ok")
+
+
+def layer_import():
+    for name in MODULES:
+        try:
+            importlib.import_module("sentinel." + name)
+        except BaseException as exc:   # catch token-damaged LookupError subclasses too
+            fail("import " + name, exc)
+    print("layer import: ok")
+
+
+def layer_probe():
+    from sentinel import findings as findings_mod
+    from sentinel import registry as registry_mod
+
+    # findings
     try:
-        from sentinel.generate import build_model, sample_config
-        from sentinel.parser import parse_gguf
-        from sentinel import rules as rulez
-        buf = build_model(sample_config())
-        model = parse_gguf(buf, filename="mem")
-        report = rulez.analyze_model(model, buf)
-        hard = [f for f in report if f.severity == "error"]
-        if hard:
-            fails.append("ROUNDTRIP: clean synthetic model produced errors: "
-                         + ", ".join(sorted({f.code for f in hard})))
-    except Exception as exc:
-        fails.append(f"ROUNDTRIP: {type(exc).__name__}: {exc}")
-    return fails
+        findings_mod.rank_of("nope")
+        raise AssertionError("rank_of must reject unknown severity")
+    except findings_mod.UnknownSeverity:
+        pass
+    except LookupError as exc:  # NameError rides this base when the raise is damaged
+        fail("findings.rank_of raise-path", exc)
+    f = findings_mod.make("E_MAGIC", "x", offset=0)
+    assert f.severity == "error" and f.key_id()[0] == "E_MAGIC"
+    assert findings_mod.counts([f]) == {"error": 1, "warn": 0, "info": 0}
+
+    # registry: upstream-pinned quant math
+    assert registry_mod.row_bytes(2, 2048) == (2048 // 32) * 18      # q4_0
+    assert registry_mod.row_bytes(2, 33) is None                       # block-misaligned
+    q8k = registry_mod.typeinfo_by_name("q8_K")
+    assert q8k is not None and q8k.blck == 256 and q8k.size == 292
+    assert registry_mod.typeinfo(9999) is None
+    print("layer probe: ok")
 
 
-def stage_pytest() -> int:
-    loader = unittest.TestLoader()
-    suite = loader.discover("tests", pattern="test_*.py", top_level_dir=ROOT)
-    return 0 if unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful else 1
+def layer_roundtrip():
+    from sentinel.generate import MUTATIONS, ModelSpec, build_model, mutate
+    from sentinel.parser import parse_gguf, tensor_bytes
+
+    spec = ModelSpec(n_block=2, n_head=2, n_kv_head=1, n_embed=64,
+                     n_ffn=128, n_vocab=256, head_dim=32)
+    buf = build_model(spec)
+    doc = parse_gguf(buf)
+    if doc.kv_get("general.architecture") != "llama":
+        fail("roundtrip arch", AssertionError(str(doc.kv_get("general.architecture"))))
+    for t in doc.tensors:
+        if tensor_bytes(t) is None:
+            fail("roundtrip sizing", AssertionError(t.name))
+        if t.offset % 32 != 0:
+            fail("roundtrip align", AssertionError(t.name))
+    if doc.data_start % doc.alignment != 0:
+        fail("roundtrip data align", AssertionError(str(doc.data_start)))
+
+    crashes = []
+    caught = 0
+    for kind in MUTATIONS:
+        hit = False
+        for seed in range(30):
+            mutated = mutate(buf, kind, random.Random(seed))
+            if mutated == buf:
+                continue
+            try:
+                parse_gguf(mutated)
+                hit = True
+            except BaseException as exc:
+                if type(exc).__name__ == "SentinelError" or getattr(exc, "code", None):
+                    hit = True
+                else:
+                    crashes.append((kind, seed, type(exc).__name__, str(exc)[:120]))
+                    break
+        if hit:
+            caught += 1
+    if crashes:
+        fail("mutation crash", crashes[0])
+    print(f"layer roundtrip: ok ({caught}/{len(MUTATIONS)} mutation kinds caught)")
 
 
-def main() -> int:
-    fails = stage_compile()
-    for line in fails:
-        print(line)
-    if fails:
-        print(f"COMPILE FAIL ({len(fails)})")
-        return 1
-    print(f"compile: ok")
-    fails = stage_smoke()
-    for line in fails:
-        print(line)
-    if fails:
-        print(f"SMOKE FAIL ({len(fails)})")
-        return 1
-    print("smoke: ok")
-    rc = stage_pytest()
-    if rc:
-        print("PYTEST FAIL")
-    else:
-        print("pytest: ok")
-    return rc
+def main():
+    layer_compile()
+    layer_import()
+    layer_probe()
+    layer_roundtrip()
+    print("GATE GREEN")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

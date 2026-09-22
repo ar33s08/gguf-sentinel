@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from . import registry
 from .findings import SentinelError, make
-from .reader import Eof, OverAlloc, Reader
+from .reader import BadString, Eof, OverAlloc, Reader
 
 MAGIC = b"GGUF"
 GGUF_VERSION_MAX = 3

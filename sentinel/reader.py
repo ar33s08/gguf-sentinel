@@ -40,6 +40,14 @@ class Eof(Exception):
         self.offset = offset
 
 
+class BadString(Exception):
+    """Raised when a length-prefixed string is not valid utf8."""
+
+    def __init__(self, offset: int, detail: str = ""):
+        super().__init__(f"invalid utf8 string at offset {offset}{(': ' + detail) if detail else ''}")
+        self.offset = offset
+
+
 class OverAlloc(Exception):
     """Raised when a single read exceeds the chunk budget."""
 
@@ -124,7 +132,10 @@ class Reader:
     def string_from(self, n: int) -> str:
         """Decode a string whose u64 length was already consumed."""
         raw = self.read_exact(n)
-        return raw.decode("utf8", errors="strict")
+        try:
+            return raw.decode("utf8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise BadString(self._pos - n, str(exc)) from exc
 
     def bytes_exact(self, n: int) -> bytes:
         return self.read_exact(n)
