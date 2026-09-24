@@ -18,7 +18,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-MODULES = ("_type_table", "findings", "registry", "reader", "keys", "parser", "generate", "rules")
+MODULES = ("_type_table", "findings", "registry", "reader", "keys", "parser",
+           "generate", "rules", "report", "fuzz", "cli")
 
 
 def fail(label, exc):
@@ -88,27 +89,33 @@ def layer_roundtrip():
         fail("roundtrip data align", AssertionError(str(doc.data_start)))
 
     crashes = []
-    caught = 0
+    per_kind = {}
     for kind in MUTATIONS:
-        hit = False
-        for seed in range(30):
+        detected = 0
+        for seed in range(40):
             mutated = mutate(buf, kind, random.Random(seed))
             if mutated == buf:
                 continue
             try:
-                parse_gguf(mutated)
-                hit = True
+                d2 = parse_gguf(mutated)
             except BaseException as exc:
                 if type(exc).__name__ == "SentinelError" or getattr(exc, "code", None):
-                    hit = True
-                else:
-                    crashes.append((kind, seed, type(exc).__name__, str(exc)[:120]))
-                    break
-        if hit:
-            caught += 1
+                    detected += 1
+                    continue
+                crashes.append((kind, seed, type(exc).__name__, str(exc)[:120]))
+                break
+            from sentinel.rules import analyze
+            flags = analyze(d2, mutated)
+            if any(f.severity in ("error", "warn") for f in flags):
+                detected += 1
+        per_kind[kind] = detected
     if crashes:
         fail("mutation crash", crashes[0])
-    print(f"layer roundtrip: ok ({caught}/{len(MUTATIONS)} mutation kinds caught)")
+    undetected = [k for k, d in per_kind.items() if d == 0]
+    if undetected:
+        fail("mutation slipped through every seed", undetected)
+    print(f"layer roundtrip: ok (every mutation kind detected; min per-kind "
+          f"detections {min(per_kind.values())}/40)")
 
 
 def main():

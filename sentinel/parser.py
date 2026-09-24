@@ -199,6 +199,10 @@ def parse_gguf(buf: bytes, *, filename: Optional[str] = None) -> ParsedModel:
     except OverAlloc as exc:
         raise SentinelError("E_HUGE_ALLOC", f"header field too large: {exc}",
                              offset=exc.offset) from exc
+    if version == 0 or version > GGUF_VERSION_MAX:
+        raise SentinelError("E_VERSION",
+                             f"unsupported GGUF version {version} (expected 1..{GGUF_VERSION_MAX})",
+                             offset=4)
     if alignment == 0 or (alignment & (alignment - 1)) != 0:
         findings.append(make("W_NO_ALIGNMENT",
                               f"general.alignment is {alignment}, not a positive power of two",
