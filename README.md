@@ -1,5 +1,7 @@
 # gguf-sentinel
 
+[![CI](https://github.com/ar33s08/gguf-sentinel/actions/workflows/ci/badge.svg)](https://github.com/ar33s08/gguf-sentinel/actions/workflows/ci.yml)
+
 A structural + semantic validator for **GGUF** model files (the `llama.cpp` /
 `gguf.cpp` format used by llama.cpp, Ollama, LM-Studio, Kobold and friends).
 
