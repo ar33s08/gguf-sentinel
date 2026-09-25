@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+backend_path = ["setuptools"]
+
+[project]
+name = "gguf-sentinel"
+version = "0.1.0"
+description = "Structural + semantic validator for GGUF (llama.cpp) model files: finds the broken-weights bugs that load fine."
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["gguf", "llama.cpp", "llm", "quantization", "validator", "fuzzing"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific :: Numerical Analysis",
+]
+
+[project.scripts]
+sentinel = "sentinel.cli:main"
+gguf-sentinel = "sentinel.cli:main"
+
+[tool.setuptools]
+packages = ["sentinel"]
+
+[tool.pytest.config]
+testpaths = ["tests"]

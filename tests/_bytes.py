@@ -29,10 +29,17 @@ def tensor(name, dims, type_id, offset):
     rec += struct.pack("<I", type_id) + struct.pack("<Q", offset)
     return rec
 
-def build(n_kv, n_tensors, kvs, tensors, meta_tail=b"", data=b"", alignment=32):
+def kv_arr_str(key, items):
+    body = s(key) + struct.pack("<I", 9) + struct.pack("<I", 8) + struct.pack("<Q", len(items))
+    body += b"".join(s(x) for x in items)
+    return body
+
+
+def build(n_kv, n_tensors, kvs, tensors=b"", meta_tail=b"", data=b"", alignment=32):
+    # the 28-byte header always carries the u32 alignment: parse_gguf reads it
+    # unconditionally, so hand-built streams must too
     head = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", n_tensors) + struct.pack("<Q", n_kv)
-    if n_tensors > 0:
-        head += struct.pack("<I", alignment)
+    head += struct.pack("<I", alignment)
     meta = head + kvs + tensors + meta_tail
     pad = (-len(meta)) % alignment if n_tensors > 0 else 0
     return meta + b"\x00" * pad + data

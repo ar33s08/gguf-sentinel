@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.pytest_cache_tmp/
+coverage
+.hypothesis/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+crashers/
+*.log
+.DS_Store

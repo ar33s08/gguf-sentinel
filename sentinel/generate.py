@@ -229,6 +229,25 @@ MUTATIONS = (
     "append", "zero",
 )
 
+# The first tensor record doubles as the anchor for field-targeted mutations.
+# Its length-prefixed name bytes are unique in any model the builder makes.
+_ANCHOR = "token_embd.weight"
+
+
+def _tensor_fields(buf: bytes, name: str = _ANCHOR) -> dict:
+    """Byte offsets of one tensor-info record's fields, located by its
+    length-prefixed name. The anchor must occur exactly once -- a second or
+    missing match raises instead of silently corrupting the wrong bytes."""
+    pat = enc_string(name)
+    start = buf.find(pat)
+    if start < 0 or buf.find(pat, start + 1) >= 0:
+        raise LookupError(f"anchor {name!r} not unique in model")
+    body = start + len(pat)
+    n_dims = int.from_bytes(buf[body:body + 4], "little")
+    dims_off = body + 4
+    type_off = dims_off + 8 * n_dims
+    return {"n_dims": body, "dims": dims_off, "type": type_off, "offset": type_off + 4}
+
 
 def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
     """Apply one named corruption; returns a new byte string (or the same one
@@ -253,19 +272,33 @@ def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
     elif kind == "flip":
         i = rng.randrange(len(body))
         body[i] ^= rng.choice([1, 2, 0x40, 0x80, 0xFF])
-    elif kind == "zero":
-        i = rng.randrange(len(body))
-        body[i] = 0
     elif kind == "append":
-        body += rng.randbytes(rng.randrange(64) + 1)
-    elif kind == "tensor_type" or kind == "tensor_offset" or kind == "tensor_dim" or kind == "kv_type":
-        i = rng.randrange(max(1, len(body) - 8))
+        # dangling bytes far past the last tensor: cut-and-paste extractors and
+        # half-finished copies leave junk this large, below tolerance it is
+        # indistinguishable from padding, so the class must be realistic
+        body += rng.randbytes(rng.randrange(1_200_000, 4_000_000))
+    elif kind in ("tensor_type", "tensor_offset", "tensor_dim"):
+        # field-targeted: the corruption classes these names promise actually
+        # land on tensor-info fields, and the rules that guard those fields
+        # (E_BAD_TENSOR_TYPE / E_TENSOR_PAST_EOF / giant-dim blowups) are the
+        # verdict. Random offsets elsewhere are weight noise no validator can
+        # -- or should -- flag, so hitting fields directly is the honest design.
+        f = _tensor_fields(bytes(body))
         if kind == "tensor_type":
-            body[i:i + 4] = struct.pack("<I", rng.choice([99, 500, 2 ** 31, 0]))
+            body[f["type"]:f["type"] + 4] = struct.pack(
+                "<I", rng.choice([99, 500, 2 ** 31, 10_000]))
         elif kind == "tensor_offset":
-            body[i:i + 8] = struct.pack("<Q", rng.choice([2 ** 63, 2 ** 48, 1]))
-        elif kind == "tensor_dim":
-            body[i:i + 8] = struct.pack("<Q", rng.choice([0, 2 ** 40, 7]))
+            body[f["offset"]:f["offset"] + 8] = struct.pack(
+                "<Q", rng.choice([2 ** 62, 2 ** 48, 10 ** 11]))
         else:
-            body[i:i + 4] = struct.pack("<I", rng.choice([99, 13, 2 ** 31]))
+            body[f["dims"]:f["dims"] + 8] = struct.pack(
+                "<Q", rng.choice([2 ** 40, 2 ** 45, 10 ** 12]))
+    elif kind == "zero":
+        # sparse-file hole: a header field wholesale zeroed (magic intact but
+        # version or alignment gone is exactly what a zero-fill on damage does)
+        hole = rng.choice((4, 24))
+        body[hole:hole + 4] = b"\x00" * 4
+    elif kind == "kv_type":
+        i = rng.randrange(max(1, len(body) - 8))
+        body[i:i + 4] = struct.pack("<I", rng.choice([99, 13, 2 ** 31]))
     return bytes(body)

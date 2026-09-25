@@ -421,6 +421,27 @@ def r_past_eof(doc: ParsedModel, ctx) -> list:
     return out
 
 
+def r_padding_zeroed(doc: ParsedModel, ctx) -> list:
+    """gguf.h: the bytes between the end of metadata and the alignment
+    boundary are zero padding. Non-zero bytes there mean the declared counts
+    stopped short and real records sit where zeros belong -- the classic
+    signature of a shrunk n_tensors/n_kv that every reader trusts blindly."""
+    if doc.data_start <= doc.meta_end:
+        return []
+    buf = ctx.get("buf")
+    if buf is None or doc.data_start > len(buf):
+        return []
+    gap = buf[doc.meta_end:doc.data_start]
+    if any(gap):
+        return [make("E_PADDING_NOT_ZERO",
+                     f"{sum(1 for b in gap if b)} of {len(gap)} padding bytes between "
+                     f"metadata end {doc.meta_end} and data start {doc.data_start} are non-zero: "
+                     f"the declared counts under-report what is really in the file",
+                     offset=doc.meta_end, expected="all zero",
+                     actual="non-zero bytes present")]
+    return []
+
+
 def r_trailing_junk(doc: ParsedModel, ctx) -> list:
     if not doc.tensors or doc.data_start >= doc.size:
         return []
@@ -568,6 +589,7 @@ RULES = (
     ("unknown_types", r_unknown_types),
     ("offsets_and_overlaps", r_offsets_and_overlaps),
     ("past_eof", r_past_eof),
+    ("padding_zeroed", r_padding_zeroed),
     ("trailing_junk", r_trailing_junk),
     ("degenerate_data", r_degenerate_data),
     ("tokenizer_counts", r_tokenizer_counts),

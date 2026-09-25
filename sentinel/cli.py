@@ -65,6 +65,7 @@ CODE_DOCS = {
     "E_DATA_UNALIGNED": ("tensor data offset not a multiple of general.alignment", "llama_load: mmap requires alignment"),
     "E_TENSOR_PAST_EOF": ("tensor data extends past the end of the file", "conversion truncation"),
     "E_TENSOR_OVERLAP": ("two tensors occupy the same bytes", "quantization tool bug"),
+    "E_PADDING_NOT_ZERO": ("alignment padding between metadata and data is not all zero", "declared counts under-report the file"),
     "W_TENSOR_GAP": ("large gap between consecutive tensors", "wasted space only"),
     "W_DATA_OFFSET_MISMATCH": ("offset field disagrees with sequential layout", "informational"),
     "E_ZERO_FILE": ("empty file", "structural"),
