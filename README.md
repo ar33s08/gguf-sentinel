@@ -3,7 +3,7 @@
 [CI: GitHub Actions](https://github.com/ar33s08/gguf-sentinel/actions/workflows/ci.yml) -- matrix py3.9/3.11/3.12, gate + audit + pytest on every push.
 
 A structural + semantic validator for **GGUF** model files (the `llama.cpp` /
-`gguf.cpp` format used by llama.cpp, Ollama, LM-Studio, Kobold and friends).
+`gguf.cpp` format used by llama.cpp, Ollama, LM-Studio, GPT4All and friends).
 
 A GGUF file that *loads* can still be quietly garbage. `gguf.cpp` validates the
 magic number and the declared counts — that's it. The tensor table, the
@@ -12,17 +12,27 @@ conversion ships as a model that produces fluent nonsense instead of crashing.
 gguf-sentinel runs **17 semantic rules** the loader never runs and tells you
 which tensor, which byte offset, and which upstream check it corresponds to.
 
-```
-$ sentinel scan mistral-7b-q4_K-sloppy.gguf
-  gguf v3  |  291 tensors (146 quantized)  |  44 kv  |  arch=mistral  |  4,367,011,264 bytes
-  E_HEAD_DIM_MISMATCH [error] -- blk.11.attn_qkv.weight rows 5632 != (heads + 2*kv_heads) * key_length
-    upstream origin: gguf.cpp: gguf_loader_geometry, per-layer qkv allocation
-  E_TENSOR_PAST_EOF [error] -- ffn_down.weight claims bytes 41e9..42e0 past the data section
-    upstream origin: gguf.c: tensor mmap end check
-  2 error / 0 warn / 0 info
+```console
+$ sentinel scan fixtures/demo.gguf
+fixtures/demo.gguf
+  gguf v3  |  18 tensors (8 quantized)  |  28 kv  |  arch=llama  |  116,960 bytes
+  clean: no findings
+  0 error / 0 warn / 0 info
+
+$ sentinel scan fixtures/demo-broken.gguf   # one tensor's type id corrupted
+fixtures/demo-broken.gguf
+  gguf v3  |  18 tensors (8 quantized)  |  28 kv  |  arch=llama  |  116,960 bytes
+  [ERROR] E_BAD_TENSOR_TYPE: tensor 'token_embd.weight' has type id 500, which is not
+    in the pinned ggml_type enum (id removed from the table upstream, or the field
+    is corrupted)  (tensor=token_embd.weight, @6954)
+  1 error / 0 warn / 0 info
 $ echo $?
 1
 ```
+
+Both files above are committed in `fixtures/`, generated deterministically by
+`python3 tools/make_demo.py`, and re-verified on every CI push — the demo is a
+contract, not a screenshot.
 
 ## What it catches (a few of the real classes)
 
@@ -57,6 +67,7 @@ that every module is exactly what was derived.
 Python ≥ 3.9, zero runtime dependencies.
 
 ```bash
+python3 -m pip install --upgrade pip   # editable installs need pip >= 21.3
 python3 -m pip install -e .
 sentinel scan path/to/model.gguf            # human output
 sentinel scan --format json model.gguf      # machine output
@@ -67,8 +78,8 @@ sentinel generate --out demo.gguf          # synthetic model for docs/tests
 sentinel fuzz --iterations 500 --seed 7    # mutation-fuzz the parser, archives crashers
 ```
 
-Exit codes: `0` clean · `1` ≥ fail-on severity · `2` below fail-on but present ·
-`3` fatal (unparseable / oversized).
+Exit codes: `0` clean · `1` at/above `--fail-on` (fatal files exit 1 too) ·
+`2` findings present but below `--fail-on` · `3` fatal when `--fatal-fatal` is set.
 
 ## The fuzzer
 
@@ -76,8 +87,9 @@ Exit codes: `0` clean · `1` ≥ fail-on severity · `2` below fail-on but prese
 `tensor_offset`, `tensor_dim`, `count_kv`, `append`, …) applied to synthetic
 models built by `sentinel/generate.py`. Every payload is scanned in a clean
 subprocess so a real crash is *proved*, not suspected: a coded `SentinelError`
-is a pass, any other exception is a crasher, archived with its seed and
-reproducible via `python3 -m sentinel.fuzz --replay crashers/crash_xxx.gguf`.
+is a pass, any other exception is a crasher. Non-clean payloads are archived
+under `crashers/` (via `--save-dir`) with their kind and seed, so a find is
+deterministically reproducible by re-running with that `--seed`.
 
 ## Tests
 

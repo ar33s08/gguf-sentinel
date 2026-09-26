@@ -364,7 +364,8 @@ def r_unknown_types(doc: ParsedModel, ctx) -> list:
         if registry.typeinfo(t.type_id) is None:
             out.append(make("E_BAD_TENSOR_TYPE",
                              f"tensor {t.name!r} has type id {t.type_id}, which is not in the "
-                             f"pinned ggml_type enum (removed id tba or corruption)",
+                             f"pinned ggml_type enum (id removed from the table upstream, "
+                             f"or the field is corrupted)",
                              tensor=t.name, offset=t.type_offset, actual=t.type_id))
         elif tensor_bytes(t) is None:
             spec = registry.typeinfo(t.type_id)

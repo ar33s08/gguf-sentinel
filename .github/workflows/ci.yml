@@ -24,6 +24,12 @@ jobs:
         run: python -m pytest tests -q
       - name: dep-free suite entry point
         run: python tests/run_all.py
+      - name: demo fixtures self-verify (README reproducibility contract)
+        run: python tools/make_demo.py
+      - name: fixture demo scans as documented
+        run: |
+          python -m sentinel.cli scan fixtures/demo.gguf
+          ! python -m sentinel.cli scan fixtures/demo-broken.gguf
       - name: cli smoke (generate then scan clean, exit 0)
         run: |
           python -m sentinel.cli generate --out /tmp/demo.gguf --blocks 2
