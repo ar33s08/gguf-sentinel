@@ -214,9 +214,10 @@ def build_model(spec: Optional[ModelSpec] = None, *, seed: int = 0xC0FFEE) -> by
 
     n_kv = len(kvs)
     n_tensors = len(layout)
+    # spec header is exactly 24 bytes (gguf.h lines 4-7); alignment travels as
+    # the general.alignment KV written above, never as a header field
     head = MAGIC + struct.pack("<I", VERSION)
     head += struct.pack("<Q", n_tensors) + struct.pack("<Q", n_kv)
-    head += struct.pack("<I", ALIGN)
     meta = head + kv_blob + b"".join(infos)
     meta_padded = meta + b"\x00" * (align_up(len(meta)) - len(meta))
     return meta_padded + b"".join(data_parts)
@@ -249,6 +250,34 @@ def _tensor_fields(buf: bytes, name: str = _ANCHOR) -> dict:
     return {"n_dims": body, "dims": dims_off, "type": type_off, "offset": type_off + 4}
 
 
+def _alignment_value_offset(buf: bytes) -> int:
+    """Offset of the general.alignment KV's u32 value bytes. alignment is a KV
+    key per gguf.h:29 -- never a header field -- so corrupting it means
+    corrupting the entry's value, located through its unique length-prefixed
+    key (key length 17 + 'general.alignment' + 4-byte type tag)."""
+    pat = enc_string("general.alignment")
+    start = buf.find(pat)
+    if start < 0 or buf.find(pat, start + 1) >= 0:
+        raise LookupError("general.alignment anchor not unique in model")
+    return start + len(pat) + 4
+
+
+_KV_ANCHORS = ("general.architecture", "general.name", "general.alignment")
+
+
+def _kv_type_tag_offset(buf: bytes) -> int:
+    """Offset of a known KV entry's 4-byte type tag, located through its
+    length-prefixed key. Corrupting a KV type id means corrupting the field
+    that encodes the type: a random window lands in weight payload almost
+    every time, where silence is correct behaviour, not detection."""
+    for key in _KV_ANCHORS:
+        pat = enc_string(key)
+        start = buf.find(pat)
+        if start >= 0 and buf.find(pat, start + 1) < 0:
+            return start + len(pat)
+    raise LookupError("no unique KV anchor in model")
+
+
 def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
     """Apply one named corruption; returns a new byte string (or the same one
     when the kind is inapplicable, so the driver can loop cheaply)."""
@@ -262,8 +291,15 @@ def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
         body[8:16] = struct.pack("<Q", rng.choice([2 ** 63, 2 ** 40, rng.randrange(4) + 1]))
     elif kind == "count_kv" and len(body) >= 24:
         body[16:24] = struct.pack("<Q", rng.choice([2 ** 63, 2 ** 40, rng.randrange(2) + 1]))
-    elif kind == "alignment" and len(body) >= 28:
-        body[24:28] = struct.pack("<I", rng.choice([0, 1, 3, 7, 48, 2 ** 20]))
+    elif kind == "alignment":
+        # general.alignment is a KV entry (gguf.h:29), so this class corrupts
+        # that entry's value -- not a header slot; a header offset here would
+        # silently be the first key's length field instead
+        try:
+            off = _alignment_value_offset(bytes(body))
+        except LookupError:
+            return buf
+        body[off:off + 4] = struct.pack("<I", rng.choice([0, 3, 7, 48]))
     elif kind == "truncate":
         cut = rng.randrange(max(8, len(body) - 8), )
         body = body[:cut] if cut else body[:1]
@@ -294,11 +330,25 @@ def mutate(buf: bytes, kind: str, rng: random.Random) -> bytes:
             body[f["dims"]:f["dims"] + 8] = struct.pack(
                 "<Q", rng.choice([2 ** 40, 2 ** 45, 10 ** 12]))
     elif kind == "zero":
-        # sparse-file hole: a header field wholesale zeroed (magic intact but
-        # version or alignment gone is exactly what a zero-fill on damage does)
-        hole = rng.choice((4, 24))
+        # sparse-file hole: a live field wholesale zeroed, magic left intact --
+        # exactly what a zero-fill on damage does. Candidates are the version
+        # (yields E_VERSION) and the general.alignment KV value (yields
+        # W_NO_ALIGNMENT via the spec default fallback), both real fields at
+        # real offsets; 24 is no longer a field boundary under the 24-byte
+        # header, so it is not offered.
+        targets = [4]
+        try:
+            targets.append(_alignment_value_offset(bytes(body)))
+        except LookupError:
+            pass
+        hole = rng.choice(targets)
         body[hole:hole + 4] = b"\x00" * 4
     elif kind == "kv_type":
-        i = rng.randrange(max(1, len(body) - 8))
-        body[i:i + 4] = struct.pack("<I", rng.choice([99, 13, 2 ** 31]))
+        # field-targeted, like the tensor classes: the corruption has to land
+        # on a KV entry's type tag or the class tests nothing
+        try:
+            off = _kv_type_tag_offset(bytes(body))
+        except LookupError:
+            return buf
+        body[off:off + 4] = struct.pack("<I", rng.choice([99, 13, 2 ** 31]))
     return bytes(body)

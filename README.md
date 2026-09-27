@@ -107,6 +107,35 @@ vendored `gguf.h`, on purpose: if the parser and the generator ever share a
 misreading of the format, the round-trip tests would hide it, the hand-built
 ones won't.
 
+### Real-world corpus (`tests/test_upstream.py`)
+
+The generator's own output is a weak oracle — if the writer and reader agreed
+on a wrong layout, every self-test stays green. So the suite also scans four
+genuine GGUF files authored by the upstream project itself
+(`models/ggml-vocab-{bert-bge,llama-spm,phi-3,refact}.gguf`), fetched at an
+**exact pinned commit** and checked against a **pinned sha256** before any
+scan runs. Without the digest, "it works on real files" is unfalsifiable —
+the URL could serve different bytes tomorrow — so the pin is what turns a vibe
+into a test.
+
+| upstream file | size | verdict |
+| --- | --- | --- |
+| `ggml-vocab-bert-bge.gguf` | 627,549 B | `0 error / 1 warn` |
+| `ggml-vocab-llama-spm.gguf` | 723,869 B | `0 error / 1 warn` |
+| `ggml-vocab-phi-3.gguf` | 726,019 B | `clean` |
+| `ggml-vocab-refact.gguf` | 1,720,710 B | `0 error / 1 warn` |
+
+Pinned commit `95887577ab5fead7…`; digests are in the test source. The warns
+are honest findings, not noise: these are tokenizer-only files with no chat
+template. The test skips (never fails) when the network is unavailable, so a
+flaky sandbox can never masquerade as a parser regression.
+
+This corpus is not decoration. It is how the 24-byte-header bug in
+`sentinel/parser.py` — an invented in-header `alignment` field that the
+generator wrote and the parser read, invisible to every self-test — was found
+and fixed: the four real files fatal'd on their first scan and parsed clean
+afterwards.
+
 ## Layout
 
 ```

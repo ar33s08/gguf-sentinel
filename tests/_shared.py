@@ -58,6 +58,8 @@ STRONG = {
     "tensor_offset": {"E_TENSOR_PAST_EOF"},
     "append": {"W_TRAILING_JUNK"},
     "zero": {"E_VERSION", "W_NO_ALIGNMENT"},
+    "alignment": {"W_NO_ALIGNMENT"},
+    "kv_type": {"E_BAD_KV_TYPE"},
     "tensor_dim": {"E_EMBED_ROWS_MISMATCH", "E_TENSOR_OVERLAP",
                    "E_TENSOR_PAST_EOF"},
 }

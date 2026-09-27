@@ -36,10 +36,11 @@ def kv_arr_str(key, items):
 
 
 def build(n_kv, n_tensors, kvs, tensors=b"", meta_tail=b"", data=b"", alignment=32):
-    # the 28-byte header always carries the u32 alignment: parse_gguf reads it
-    # unconditionally, so hand-built streams must too
+    # the header is exactly 24 bytes per gguf.h lines 4-7; alignment is a KV
+    # key, so `alignment` here only sizes the padding (the parser's own value
+    # comes from a general.alignment KV if the caller's kvs carry one, else
+    # the spec default 32 -- matching this default)
     head = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", n_tensors) + struct.pack("<Q", n_kv)
-    head += struct.pack("<I", alignment)
     meta = head + kvs + tensors + meta_tail
     pad = (-len(meta)) % alignment if n_tensors > 0 else 0
     return meta + b"\x00" * pad + data

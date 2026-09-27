@@ -7,11 +7,17 @@ permits continuation yields Findings rather than aborting -- a file with three
 broken tensors still gets its healthy metadata audited, which is what triage
 users actually need.
 
-Layout (pinned to the vendored gguf.h):
-    magic 'GGUF' | u32 version | u64 n_tensors | u64 n_kv | u32 alignment
+Layout (pinned to the vendored gguf.h lines 4-7 and 29-30):
+    magic 'GGUF' | u32 version | i64 n_tensors | i64 n_kv   (24 bytes, no more)
     n_kv      x KV: string key | u32 gguf_type | value
     n_tensors x TI: string name | u32 n_dims | u64 dims | u32 type | u64 offset
-    zero pad to alignment, then tensor data.
+    zero pad to general.alignment, then tensor data.
+
+general.alignment is a KV key, never a header field: "If the special key
+general.alignment (uint32_t) is defined it is used for alignment, otherwise
+GGUF_DEFAULT_ALIGNMENT is used." A file that does not declare it is valid and
+gets 32; inventing a header field there shifts every later read four bytes and
+turns the first key's length field into garbage.
 """
 from __future__ import annotations
 
@@ -24,6 +30,9 @@ from .reader import BadString, Eof, OverAlloc, Reader
 
 MAGIC = b"GGUF"
 GGUF_VERSION_MAX = 3
+HEADER_BYTES = 24           # magic 4 + version 4 + n_tensors 8 + n_kv 8
+ALIGN_KEY = "general.alignment"
+GGUF_DEFAULT_ALIGNMENT = 32  # gguf.h GGUF_DEFAULT_ALIGNMENT
 INT64_SIGN_BIT = 1 << 63
 COUNT_SANITY = 50_000_000
 
@@ -191,10 +200,9 @@ def parse_gguf(buf: bytes, *, filename: Optional[str] = None) -> ParsedModel:
         version = rd.u32()
         n_tensors = _read_count(rd, "n_tensors", rd.remaining(), 16, findings)
         n_kv = _read_count(rd, "n_kv", rd.remaining(), 13, findings)
-        alignment = rd.u32()
     except Eof as exc:
         raise SentinelError("E_TRUNCATED_HEADER",
-                             f"file ends inside the 28-byte header: {exc}",
+                             f"file ends inside the {HEADER_BYTES}-byte header: {exc}",
                              offset=exc.offset) from exc
     except OverAlloc as exc:
         raise SentinelError("E_HUGE_ALLOC", f"header field too large: {exc}",
@@ -203,11 +211,6 @@ def parse_gguf(buf: bytes, *, filename: Optional[str] = None) -> ParsedModel:
         raise SentinelError("E_VERSION",
                              f"unsupported GGUF version {version} (expected 1..{GGUF_VERSION_MAX})",
                              offset=4)
-    if alignment == 0 or (alignment & (alignment - 1)) != 0:
-        findings.append(make("W_NO_ALIGNMENT",
-                              f"general.alignment is {alignment}, not a positive power of two",
-                              key="general.alignment", offset=rd.pos - 4,
-                              expected="power of two", actual=alignment))
 
     kv_entries = []
     kv_map = {}
@@ -233,6 +236,28 @@ def parse_gguf(buf: bytes, *, filename: Optional[str] = None) -> ParsedModel:
     except BadString as exc:
         raise SentinelError("E_BAD_STRING", f"invalid utf8 in kv: {exc}",
                              offset=exc.offset) from exc
+
+    # alignment lives in the KV section (gguf.h:29), not in the header. An
+    # undeclared key is legal and means GGUF_DEFAULT_ALIGNMENT; a declared
+    # value that is not a positive power of two is a finding, and geometry
+    # falls back to the default so the alignment rules stay meaningful.
+    row = kv_map.get(ALIGN_KEY)
+    if row is None:
+        alignment = GGUF_DEFAULT_ALIGNMENT
+    else:
+        declared = row.value
+        bad = (not isinstance(declared, int) or isinstance(declared, bool)
+               or declared <= 0 or (declared & (declared - 1)) != 0)
+        if bad:
+            findings.append(make("W_NO_ALIGNMENT",
+                                 f"general.alignment is {declared!r}, not a positive "
+                                 f"power of two; using the spec default "
+                                 f"{GGUF_DEFAULT_ALIGNMENT}",
+                                 key=ALIGN_KEY, offset=row.value_offset,
+                                 expected="power of two", actual=declared))
+            alignment = GGUF_DEFAULT_ALIGNMENT
+        else:
+            alignment = int(declared)
 
     tensors = []
     try:
